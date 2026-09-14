@@ -1,0 +1,170 @@
+# STAGE 5: Real Tweet Stream Simulation
+# Real-Time Sentiment Analysis Project
+# Run this in the SAME Kaggle notebook session as Stages 1-4
+# (needs bilstm_model.keras and tokenizer.pkl already saved,
+#  and the Sentiment140 CSV still available under /kaggle/input)
+# =============================================================
+#
+# WHY THIS APPROACH:
+# Reddit's API now requires manual approval (self-service registration
+# closed in 2026 under their new Responsible Builder Policy), so instead
+# of a real live internet connection, we simulate "live arrival" using
+# genuine, real tweet text the model has never seen during training.
+# This proves the exact same pipeline architecture (ingest -> clean ->
+# predict -> display) your papers describe, just with a stand-in source
+# instead of a live socket. Swapping in a real API later only means
+# replacing the tweet_stream() function below.
+# =============================================================
+
+import os
+import re
+import time
+import random
+import numpy as np
+import pandas as pd
+import pickle
+from collections import deque
+from IPython.display import clear_output
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+# -----------------------------------------------------------
+# 1. LOAD MODEL + TOKENIZER (same as Stages 3-4)
+# -----------------------------------------------------------
+model = load_model("bilstm_model.keras")
+
+with open("tokenizer.pkl", "rb") as f:
+    tokenizer = pickle.load(f)
+
+MAX_LEN = 50
+
+# -----------------------------------------------------------
+# 2. CLEANING + PREDICTION FUNCTIONS (same as before)
+# -----------------------------------------------------------
+def clean_tweet(text):
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www\S+|https\S+", "", text)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"#", "", text)
+    text = re.sub(r"[^a-zA-Z\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def predict_sentiment(raw_text):
+    cleaned = clean_tweet(raw_text)
+    if len(cleaned) == 0:
+        return "Neutral/Empty", 0.0
+
+    sequence = tokenizer.texts_to_sequences([cleaned])
+    padded = pad_sequences(sequence, maxlen=MAX_LEN, padding="post", truncating="post")
+    prob = model.predict(padded, verbose=0)[0][0]
+
+    sentiment = "Positive" if prob > 0.5 else "Negative"
+    confidence = prob if prob > 0.5 else 1 - prob
+    return sentiment, round(float(confidence) * 100, 2)
+
+# -----------------------------------------------------------
+# 3. LOAD A FRESH BATCH OF REAL TWEETS THE MODEL HASN'T SEEN
+# Auto-detects the Sentiment140 file, same as Stage 1's approach,
+# so this doesn't break if the path shifts between sessions.
+# -----------------------------------------------------------
+def find_file(filename_contains, search_root="/kaggle/input"):
+    matches = []
+    for dirpath, _, filenames in os.walk(search_root):
+        for fname in filenames:
+            if filename_contains.lower() in fname.lower():
+                matches.append(os.path.join(dirpath, fname))
+    return matches
+
+sentiment140_matches = find_file("training.1600000.processed.noemoticon.csv")
+if len(sentiment140_matches) == 0:
+    raise FileNotFoundError(
+        "Could not find the Sentiment140 CSV under /kaggle/input. "
+        "Make sure the Sentiment140 dataset is still attached to this notebook."
+    )
+DATA_PATH = sentiment140_matches[0]
+print("Using Sentiment140 file at:", DATA_PATH)
+
+print("Loading a fresh batch of real, unseen tweets for the live demo...")
+
+full_df = pd.read_csv(
+    DATA_PATH,
+    encoding="latin-1",
+    header=None,
+    names=["target", "ids", "date", "flag", "user", "text"]
+)
+
+# Different random_state than Stage 1 (which used 42) -> different rows,
+# genuinely not part of what the model trained/validated/tested on
+live_demo_df = full_df.sample(n=300, random_state=999).reset_index(drop=True)
+
+print(f"Loaded {len(live_demo_df)} fresh tweets for streaming.\n")
+
+# -----------------------------------------------------------
+# 4. THE "STREAM" GENERATOR
+# In a real deployment this function is what you'd replace with a
+# genuine API/socket connection. Everything downstream (cleaning,
+# prediction, live display) stays exactly the same either way.
+# -----------------------------------------------------------
+def tweet_stream():
+    """Yields tweets one at a time, simulating live arrival."""
+    rows = live_demo_df["text"].tolist()
+    random.shuffle(rows)
+    for tweet in rows:
+        yield tweet
+
+# -----------------------------------------------------------
+# 5. THE LIVE FEED LOOP (same structure as Stage 4)
+# -----------------------------------------------------------
+def run_live_feed(num_updates=25, delay_seconds=1.5, feed_size=10):
+    recent_feed = deque(maxlen=feed_size)
+    sentiment_counts = {"Positive": 0, "Negative": 0, "Neutral/Empty": 0}
+
+    stream = tweet_stream()
+
+    for i in range(num_updates):
+        tweet = next(stream)
+        sentiment, confidence = predict_sentiment(tweet)
+        sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
+        recent_feed.append((tweet.replace("\n", " "), sentiment, confidence))
+
+        clear_output(wait=True)
+        print("=" * 70)
+        print(f"LIVE SENTIMENT FEED  (real unseen tweets)  update {i + 1}/{num_updates}")
+        print("=" * 70)
+
+        total = sum(sentiment_counts.values())
+        pos_pct = (sentiment_counts["Positive"] / total * 100) if total else 0
+        neg_pct = (sentiment_counts["Negative"] / total * 100) if total else 0
+
+        print(f"\nRunning totals: {total} tweets processed")
+        print(f"  Positive: {sentiment_counts['Positive']}  ({pos_pct:.1f}%)")
+        print(f"  Negative: {sentiment_counts['Negative']}  ({neg_pct:.1f}%)")
+        print()
+        print("-" * 70)
+        print(f"{'SENTIMENT':<12}{'CONF %':<10}TWEET")
+        print("-" * 70)
+        for t, s, c in recent_feed:
+            symbol = "[+]" if s == "Positive" else ("[-]" if s == "Negative" else "[ ]")
+            print(f"{symbol} {s:<10}{c:<10}{t[:55]}")
+
+        time.sleep(delay_seconds)
+
+    print("\n" + "=" * 70)
+    print("Live feed simulation complete.")
+    print("=" * 70)
+    return sentiment_counts
+
+
+# -----------------------------------------------------------
+# 6. RUN IT
+# -----------------------------------------------------------
+print("Starting live feed using real, unseen tweet data...\n")
+
+final_counts = run_live_feed(num_updates=25, delay_seconds=1.5, feed_size=10)
+
+print("\nFinal sentiment breakdown:", final_counts)
+print("\nStage 5 complete.")
+print("To go fully live from the internet later: replace tweet_stream() with")
+print("a real API/socket source (Reddit once approved, snscrape, or NewsAPI).")
+print("Every other part of the pipeline (cleaning, prediction, display) stays the same.")

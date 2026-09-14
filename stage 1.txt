@@ -1,0 +1,216 @@
+stage 1
+# =============================================================
+# STAGE 1: Data Loading, Cleaning, and GloVe Embeddings
+# Real-Time Sentiment Analysis Project
+# Run this on Kaggle Notebooks (free GPU, has Sentiment140 + GloVe built in)
+# =============================================================
+
+# -----------------------------------------------------------
+# HOW TO SET THIS UP ON KAGGLE (do this first, one-time):
+# 1. Go to kaggle.com -> New Notebook
+# 2. On the right panel, click "Add Input"
+#    - Search "Sentiment140" -> add "kazanova/sentiment140"
+#    - Search "GloVe" -> add "watts2/glove6b100dtxt" (or "danielwillgeorge/glove6b100dtxt")
+# 3. Settings (right panel) -> Accelerator -> GPU T4 x2
+# 4. Paste this code into a cell and run it
+# -----------------------------------------------------------
+
+import pandas as pd
+import numpy as np
+import re
+import string
+
+# -----------------------------------------------------------
+# 1. LOAD THE DATASET
+# -----------------------------------------------------------
+# Sentiment140 columns: target, ids, date, flag, user, text
+# target: 0 = negative, 4 = positive (no neutral in this dataset originally)
+
+# Auto-detect the file instead of hardcoding a path (Kaggle sometimes
+# nests dataset folders differently between sessions/uploaders).
+import os
+
+def find_file(filename_contains, search_root="/kaggle/input"):
+    """Search recursively for a file whose name contains the given text."""
+    matches = []
+    for dirpath, _, filenames in os.walk(search_root):
+        for fname in filenames:
+            if filename_contains.lower() in fname.lower():
+                matches.append(os.path.join(dirpath, fname))
+    return matches
+
+sentiment140_matches = find_file("training.1600000.processed.noemoticon.csv")
+
+if len(sentiment140_matches) == 0:
+    raise FileNotFoundError(
+        "Could not find the Sentiment140 CSV under /kaggle/input.\n"
+        "Go to 'Add Input' on the right panel, search 'sentiment140', and add\n"
+        "the dataset titled 'Sentiment140 dataset with 1.6 million tweets' (by kazanova).\n"
+        "Then re-run this cell."
+    )
+
+DATA_PATH = sentiment140_matches[0]
+print("Using Sentiment140 file at:", DATA_PATH)
+
+df = pd.read_csv(
+    DATA_PATH,
+    encoding="latin-1",
+    header=None,
+    names=["target", "ids", "date", "flag", "user", "text"]
+)
+
+print("Total tweets loaded:", len(df))
+print(df["target"].value_counts())
+
+# For faster prototyping, take a manageable sample first.
+# Once the pipeline works end-to-end, come back and remove this line
+# to train on the full 1.6M tweets.
+df = df.sample(n=100000, random_state=42).reset_index(drop=True)
+
+# -----------------------------------------------------------
+# 2. MAP LABELS TO 0/1/2 (negative/neutral/positive)
+# -----------------------------------------------------------
+# Sentiment140 only has 0 (negative) and 4 (positive).
+# We remap to match the papers' 3-class scheme (positive/negative/neutral).
+# Since there's no neutral class here, we start with binary classification
+# (matches ConvLSTMConv from Paper 3, which was also binary) and can upgrade
+# to 3-class later by injecting a neutral-labeled dataset.
+
+label_map = {0: 0, 4: 1}  # 0 = negative, 1 = positive
+df["label"] = df["target"].map(label_map)
+df = df.dropna(subset=["label"])
+df["label"] = df["label"].astype(int)
+
+# -----------------------------------------------------------
+# 3. CLEAN THE TEXT (matches preprocessing described in Paper 2)
+# -----------------------------------------------------------
+def clean_tweet(text):
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www\S+|https\S+", "", text)      # remove URLs
+    text = re.sub(r"@\w+", "", text)                          # remove mentions
+    text = re.sub(r"#", "", text)                             # remove hashtag symbol (keep word)
+    text = re.sub(r"[^a-zA-Z\s]", "", text)                   # remove punctuation/numbers
+    text = re.sub(r"\s+", " ", text).strip()                  # collapse whitespace
+    return text
+
+df["clean_text"] = df["text"].apply(clean_tweet)
+
+# Drop any tweets that became empty after cleaning
+df = df[df["clean_text"].str.len() > 0].reset_index(drop=True)
+
+print("\nSample cleaned tweets:")
+print(df[["text", "clean_text", "label"]].head(5))
+
+# -----------------------------------------------------------
+# 4. TOKENIZE AND PAD (turn words into integer sequences)
+# -----------------------------------------------------------
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+MAX_VOCAB = 20000      # only keep the 20k most common words
+MAX_LEN = 50            # tweets longer than this get cut, shorter get padded
+
+tokenizer = Tokenizer(num_words=MAX_VOCAB, oov_token="<OOV>")
+tokenizer.fit_on_texts(df["clean_text"])
+
+sequences = tokenizer.texts_to_sequences(df["clean_text"])
+X = pad_sequences(sequences, maxlen=MAX_LEN, padding="post", truncating="post")
+y = df["label"].values
+
+print("\nShape of X (tweets, max_len):", X.shape)
+print("Shape of y (labels):", y.shape)
+
+# -----------------------------------------------------------
+# 5. WORD EMBEDDINGS
+# -----------------------------------------------------------
+# Tries to auto-detect a GloVe 100d file from any attached Kaggle dataset,
+# regardless of exact filename/upload date. Falls back to training
+# embeddings from scratch if no GloVe file is found, so this never blocks
+# the pipeline even if the dataset search comes up empty.
+
+EMBEDDING_DIM = 100
+vocab_size = min(MAX_VOCAB, len(tokenizer.word_index) + 1)
+
+def find_glove_file(search_root="/kaggle/input"):
+    """Look for any file that looks like a GloVe 100-dim vector file."""
+    candidates = []
+    for dirpath, _, filenames in os.walk(search_root):
+        for fname in filenames:
+            lower = fname.lower()
+            if "glove" in lower and "100" in lower and lower.endswith(".txt"):
+                candidates.append(os.path.join(dirpath, fname))
+    return candidates
+
+glove_matches = find_glove_file()
+
+if glove_matches:
+    GLOVE_PATH = glove_matches[0]
+    print(f"Found GloVe file: {GLOVE_PATH}")
+    print("Loading GloVe vectors (this takes ~30-60 seconds)...")
+
+    embeddings_index = {}
+    with open(GLOVE_PATH, encoding="utf8") as f:
+        for line in f:
+            values = line.split()
+            word = values[0]
+            vector = np.asarray(values[1:], dtype="float32")
+            embeddings_index[word] = vector
+
+    print(f"Loaded {len(embeddings_index)} word vectors.")
+
+    embedding_matrix = np.zeros((vocab_size, EMBEDDING_DIM))
+    found = 0
+    for word, i in tokenizer.word_index.items():
+        if i >= vocab_size:
+            continue
+        vector = embeddings_index.get(word)
+        if vector is not None:
+            embedding_matrix[i] = vector
+            found += 1
+    print(f"Words matched to GloVe vectors: {found} / {vocab_size}")
+    USE_PRETRAINED_EMBEDDINGS = True
+
+else:
+    print("No GloVe file found under /kaggle/input.")
+    print("Falling back to training embeddings from scratch (no GloVe needed).")
+    print("If you want GloVe, add a Kaggle dataset containing a file with")
+    print("'glove' and '100' in its name, then re-run this cell.")
+    embedding_matrix = np.zeros((vocab_size, EMBEDDING_DIM))
+    USE_PRETRAINED_EMBEDDINGS = False
+
+# -----------------------------------------------------------
+# 6. TRAIN / VALIDATION / TEST SPLIT
+# -----------------------------------------------------------
+from sklearn.model_selection import train_test_split
+
+X_train, X_temp, y_train, y_temp = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+X_val, X_test, y_val, y_test = train_test_split(
+    X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp
+)
+
+print("\nTrain size:", X_train.shape[0])
+print("Validation size:", X_val.shape[0])
+print("Test size:", X_test.shape[0])
+
+# -----------------------------------------------------------
+# 7. SAVE EVERYTHING NEEDED FOR STAGE 2 (model building/training)
+# -----------------------------------------------------------
+np.save("X_train.npy", X_train)
+np.save("X_val.npy", X_val)
+np.save("X_test.npy", X_test)
+np.save("y_train.npy", y_train)
+np.save("y_val.npy", y_val)
+np.save("y_test.npy", y_test)
+np.save("embedding_matrix.npy", embedding_matrix)
+np.save("use_pretrained_embeddings.npy", np.array([USE_PRETRAINED_EMBEDDINGS]))
+
+import pickle
+with open("tokenizer.pkl", "wb") as f:
+    pickle.dump(tokenizer, f)
+
+print("\nStage 1 complete. Files saved:")
+print("X_train.npy, X_val.npy, X_test.npy, y_train.npy, y_val.npy, y_test.npy")
+print("embedding_matrix.npy, tokenizer.pkl")
+print("\nNext: Stage 2 builds and trains the CNN + Bi-LSTM model using these files.")

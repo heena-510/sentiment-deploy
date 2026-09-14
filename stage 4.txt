@@ -1,0 +1,145 @@
+stage 4
+# =============================================================
+# STAGE 4: Real-Time Stream Simulation + Live Feed
+# Real-Time Sentiment Analysis Project
+# Run this in the SAME Kaggle notebook session as Stages 1-3
+# (needs bilstm_model.keras and tokenizer.pkl already saved)
+# =============================================================
+
+import re
+import time
+import random
+import numpy as np
+import pickle
+from collections import deque
+from IPython.display import clear_output
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+# -----------------------------------------------------------
+# 1. LOAD MODEL + TOKENIZER (same as Stage 3)
+# -----------------------------------------------------------
+model = load_model("bilstm_model.keras")
+
+with open("tokenizer.pkl", "rb") as f:
+    tokenizer = pickle.load(f)
+
+MAX_LEN = 50
+
+# -----------------------------------------------------------
+# 2. CLEANING + PREDICTION FUNCTIONS (same as Stage 3)
+# -----------------------------------------------------------
+def clean_tweet(text):
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www\S+|https\S+", "", text)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"#", "", text)
+    text = re.sub(r"[^a-zA-Z\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def predict_sentiment(raw_text):
+    cleaned = clean_tweet(raw_text)
+    if len(cleaned) == 0:
+        return "Neutral/Empty", 0.0
+
+    sequence = tokenizer.texts_to_sequences([cleaned])
+    padded = pad_sequences(sequence, maxlen=MAX_LEN, padding="post", truncating="post")
+    prob = model.predict(padded, verbose=0)[0][0]
+
+    sentiment = "Positive" if prob > 0.5 else "Negative"
+    confidence = prob if prob > 0.5 else 1 - prob
+    return sentiment, round(float(confidence) * 100, 2)
+
+# -----------------------------------------------------------
+# 3. SIMULATED "LIVE" TWEET SOURCE
+# In a real deployment, this function would be replaced by:
+#   - a Twitter/X API streaming call, or
+#   - a Reddit API (PRAW) polling call, or
+#   - a Kafka consumer reading from a live topic
+# For now, it randomly picks from a pool of realistic sample
+# tweets, simulating new posts arriving over time.
+# -----------------------------------------------------------
+simulated_tweet_pool = [
+    "Just got promoted at work! Best day ever!!",
+    "Traffic this morning was absolutely horrible, so late now.",
+    "Watching the sunset from my balcony, so peaceful right now.",
+    "My internet has been down for 3 hours, so done with this provider.",
+    "Grabbed coffee with an old friend today, felt really nice.",
+    "This new restaurant downtown was a total letdown, overpriced and bland.",
+    "Finally finished my project after weeks of work, feeling accomplished!",
+    "Ugh, spilled coffee all over my laptop this morning.",
+    "The new movie was okay, nothing special but not bad either.",
+    "Can't stop smiling, just adopted the cutest puppy today!",
+    "Customer support hung up on me twice today, unacceptable.",
+    "Rainy days like this make me want to just stay in and read.",
+    "So proud of my team, we crushed the deadline!",
+    "Woke up with a terrible headache, ruining my whole day.",
+    "Just an average Tuesday, nothing exciting happening.",
+]
+
+def get_next_simulated_tweet():
+    """Simulates a new tweet arriving from a live stream."""
+    return random.choice(simulated_tweet_pool)
+
+# -----------------------------------------------------------
+# 4. THE LIVE FEED LOOP
+# Pulls a "new" tweet every few seconds, predicts its sentiment,
+# and redraws a running feed + running sentiment counts.
+# -----------------------------------------------------------
+def run_live_feed(num_updates=20, delay_seconds=2, feed_size=10):
+    """
+    num_updates: how many simulated tweets to process before stopping
+    delay_seconds: pause between each 'new' tweet (simulates real-time arrival)
+    feed_size: how many recent tweets to show on screen at once
+    """
+    recent_feed = deque(maxlen=feed_size)
+    sentiment_counts = {"Positive": 0, "Negative": 0, "Neutral/Empty": 0}
+
+    for i in range(num_updates):
+        tweet = get_next_simulated_tweet()
+        sentiment, confidence = predict_sentiment(tweet)
+        sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
+
+        recent_feed.append((tweet, sentiment, confidence))
+
+        clear_output(wait=True)
+        print("=" * 70)
+        print(f"LIVE SENTIMENT FEED  (update {i + 1}/{num_updates})")
+        print("=" * 70)
+
+        total = sum(sentiment_counts.values())
+        pos_pct = (sentiment_counts["Positive"] / total * 100) if total else 0
+        neg_pct = (sentiment_counts["Negative"] / total * 100) if total else 0
+
+        print(f"\nRunning totals: {total} tweets processed")
+        print(f"  Positive: {sentiment_counts['Positive']}  ({pos_pct:.1f}%)")
+        print(f"  Negative: {sentiment_counts['Negative']}  ({neg_pct:.1f}%)")
+        print()
+        print("-" * 70)
+        print(f"{'SENTIMENT':<12}{'CONF %':<10}TWEET")
+        print("-" * 70)
+        for t, s, c in recent_feed:
+            marker = "🟢" if s == "Positive" else ("🔴" if s == "Negative" else "⚪")
+            print(f"{marker} {s:<10}{c:<10}{t[:60]}")
+
+        time.sleep(delay_seconds)
+
+    print("\n" + "=" * 70)
+    print("Live feed simulation complete.")
+    print("=" * 70)
+    return sentiment_counts
+
+
+# -----------------------------------------------------------
+# 5. RUN IT
+# -----------------------------------------------------------
+print("Starting live feed simulation...")
+print("(This will run for a while — each update pauses briefly to simulate real-time arrival)\n")
+
+final_counts = run_live_feed(num_updates=20, delay_seconds=2, feed_size=10)
+
+print("\nFinal sentiment breakdown:", final_counts)
+print("\nStage 4 complete.")
+print("Next: swap get_next_simulated_tweet() for a real API (Reddit/PRAW recommended)")
+print("to make this a genuinely live system instead of a simulation.")

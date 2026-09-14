@@ -1,0 +1,114 @@
+stage3
+# =============================================================
+# STAGE 3: Real-Time Inference Pipeline
+# Real-Time Sentiment Analysis Project
+# Run this in the SAME Kaggle notebook session as Stage 1 and Stage 2
+# (it needs the tokenizer.pkl and bilstm_model.keras files already saved)
+# =============================================================
+
+import re
+import numpy as np
+import pickle
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+# -----------------------------------------------------------
+# 1. LOAD THE WINNING MODEL + TOKENIZER
+# -----------------------------------------------------------
+model = load_model("bilstm_model.keras")
+
+with open("tokenizer.pkl", "rb") as f:
+    tokenizer = pickle.load(f)
+
+MAX_LEN = 50  # must match the MAX_LEN used in Stage 1
+
+print("Model and tokenizer loaded. Ready for real-time predictions.\n")
+
+# -----------------------------------------------------------
+# 2. SAME CLEANING FUNCTION AS STAGE 1
+# (a live tweet must go through the exact same preprocessing
+#  the training data went through, or predictions will be unreliable)
+# -----------------------------------------------------------
+def clean_tweet(text):
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www\S+|https\S+", "", text)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"#", "", text)
+    text = re.sub(r"[^a-zA-Z\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+# -----------------------------------------------------------
+# 3. THE CORE PREDICTION FUNCTION
+# This is the function a real streaming pipeline would call
+# on every incoming tweet.
+# -----------------------------------------------------------
+def predict_sentiment(raw_text):
+    cleaned = clean_tweet(raw_text)
+
+    if len(cleaned) == 0:
+        return {
+            "text": raw_text,
+            "cleaned": cleaned,
+            "sentiment": "N/A (empty after cleaning)",
+            "confidence": None
+        }
+
+    sequence = tokenizer.texts_to_sequences([cleaned])
+    padded = pad_sequences(sequence, maxlen=MAX_LEN, padding="post", truncating="post")
+
+    prob = model.predict(padded, verbose=0)[0][0]
+    sentiment = "Positive" if prob > 0.5 else "Negative"
+    confidence = prob if prob > 0.5 else 1 - prob
+
+    return {
+        "text": raw_text,
+        "cleaned": cleaned,
+        "sentiment": sentiment,
+        "confidence": round(float(confidence) * 100, 2)
+    }
+
+# -----------------------------------------------------------
+# 4. RUN ON SAMPLE TWEETS FIRST (sanity check)
+# -----------------------------------------------------------
+sample_tweets = [
+    "I absolutely love this new phone, best purchase ever!",
+    "This is the worst customer service I have ever experienced.",
+    "Just landed in Paris, so excited for this trip!!",
+    "Ugh, my flight got delayed again. So frustrating.",
+    "The weather today is okay I guess, nothing special.",
+    "Cannot believe how amazing that concert was last night ",
+    "I hate waiting in line for hours, this is ridiculous.",
+    "Thank you so much for the birthday wishes everyone! Feeling loved.",
+]
+
+print("=" * 65)
+print("SAMPLE PREDICTIONS")
+print("=" * 65)
+
+for tweet in sample_tweets:
+    result = predict_sentiment(tweet)
+    print(f"\nText:       {result['text']}")
+    print(f"Prediction: {result['sentiment']}  (confidence: {result['confidence']}%)")
+
+# -----------------------------------------------------------
+# 5. INTERACTIVE MODE — type your own sentences
+# -----------------------------------------------------------
+print("\n" + "=" * 65)
+print("INTERACTIVE MODE")
+print("Type a sentence and press Enter to see its predicted sentiment.")
+print("Type 'quit' to stop.")
+print("=" * 65)
+
+while True:
+    user_input = input("\nEnter text: ")
+    if user_input.strip().lower() == "quit":
+        print("Stopped interactive mode.")
+        break
+
+    result = predict_sentiment(user_input)
+    print(f"Prediction: {result['sentiment']}  (confidence: {result['confidence']}%)")
+
+print("\nStage 3 complete.")
+print("Next: Stage 4 connects this to a live data source (e.g. a stream simulator")
+print("or real API) and a dashboard, to make it truly 'real-time'.")

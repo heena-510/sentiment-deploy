@@ -1,0 +1,211 @@
+stage 2
+# =============================================================
+# STAGE 2: Build, Train, and Compare CNN vs Bi-LSTM Models
+# Real-Time Sentiment Analysis Project
+# Run this in the SAME Kaggle notebook session as Stage 1
+# (it needs the .npy/.pkl files Stage 1 saved to disk)
+# =============================================================
+
+import numpy as np
+import pickle
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import (
+    Input, Embedding, Conv1D, MaxPooling1D, GlobalMaxPooling1D,
+    Concatenate, Dense, Dropout, Bidirectional, LSTM
+)
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+
+# -----------------------------------------------------------
+# 1. LOAD EVERYTHING STAGE 1 SAVED
+# -----------------------------------------------------------
+X_train = np.load("X_train.npy")
+X_val = np.load("X_val.npy")
+X_test = np.load("X_test.npy")
+y_train = np.load("y_train.npy")
+y_val = np.load("y_val.npy")
+y_test = np.load("y_test.npy")
+embedding_matrix = np.load("embedding_matrix.npy")
+USE_PRETRAINED_EMBEDDINGS = bool(np.load("use_pretrained_embeddings.npy")[0])
+
+with open("tokenizer.pkl", "rb") as f:
+    tokenizer = pickle.load(f)
+
+VOCAB_SIZE = embedding_matrix.shape[0]
+EMBEDDING_DIM = embedding_matrix.shape[1]
+MAX_LEN = X_train.shape[1]
+
+print("Vocab size:", VOCAB_SIZE)
+print("Embedding dim:", EMBEDDING_DIM)
+print("Max tweet length:", MAX_LEN)
+
+# -----------------------------------------------------------
+# 2. HYPERPARAMETERS (matches Paper 2's Table II exactly)
+# -----------------------------------------------------------
+DROPOUT_RATE = 0.5
+BATCH_SIZE = 64
+EPOCHS = 30
+LEARNING_RATE = 0.001
+
+# -----------------------------------------------------------
+# 3. BUILD THE CNN MODEL
+# (3 parallel filters of size 3, 4, 5 -> max-pool each -> concat -> dense)
+# Matches Paper 2's Figure 2 architecture
+# -----------------------------------------------------------
+def build_cnn_model():
+    inputs = Input(shape=(MAX_LEN,), name="tweet_input")
+
+    embedding = Embedding(
+        input_dim=VOCAB_SIZE,
+        output_dim=EMBEDDING_DIM,
+        weights=[embedding_matrix] if embedding_matrix.any() else None,
+        trainable=not USE_PRETRAINED_EMBEDDINGS,
+        name="glove_embedding"
+    )(inputs)
+
+    # Three parallel convolution branches, each looking at a different n-gram size
+    conv_branches = []
+    for filter_size in [3, 4, 5]:
+        conv = Conv1D(
+            filters=128,
+            kernel_size=filter_size,
+            activation="relu",
+            name=f"conv_{filter_size}gram"
+        )(embedding)
+        pooled = GlobalMaxPooling1D(name=f"maxpool_{filter_size}gram")(conv)
+        conv_branches.append(pooled)
+
+    merged = Concatenate(name="concat_ngrams")(conv_branches)
+    dropped = Dropout(DROPOUT_RATE, name="dropout")(merged)
+    dense = Dense(64, activation="relu", name="dense_hidden")(dropped)
+    output = Dense(1, activation="sigmoid", name="sentiment_output")(dense)
+
+    model = Model(inputs=inputs, outputs=output, name="CNN_SentimentModel")
+    model.compile(
+        optimizer=Adam(learning_rate=LEARNING_RATE),
+        loss="binary_crossentropy",
+        metrics=["accuracy"]
+    )
+    return model
+
+
+# -----------------------------------------------------------
+# 4. BUILD THE Bi-LSTM MODEL
+# Matches Paper 2's Figure 3 architecture (simplified: no attention layer yet)
+# -----------------------------------------------------------
+def build_bilstm_model():
+    inputs = Input(shape=(MAX_LEN,), name="tweet_input")
+
+    embedding = Embedding(
+        input_dim=VOCAB_SIZE,
+        output_dim=EMBEDDING_DIM,
+        weights=[embedding_matrix] if embedding_matrix.any() else None,
+        trainable=not USE_PRETRAINED_EMBEDDINGS,
+        name="glove_embedding"
+    )(inputs)
+
+    bilstm = Bidirectional(
+        LSTM(64, return_sequences=False),
+        name="bidirectional_lstm"
+    )(embedding)
+
+    dropped = Dropout(DROPOUT_RATE, name="dropout")(bilstm)
+    dense = Dense(64, activation="relu", name="dense_hidden")(dropped)
+    output = Dense(1, activation="sigmoid", name="sentiment_output")(dense)
+
+    model = Model(inputs=inputs, outputs=output, name="BiLSTM_SentimentModel")
+    model.compile(
+        optimizer=Adam(learning_rate=LEARNING_RATE),
+        loss="binary_crossentropy",
+        metrics=["accuracy"]
+    )
+    return model
+
+
+# -----------------------------------------------------------
+# 5. TRAIN THE CNN MODEL
+# -----------------------------------------------------------
+print("\n" + "=" * 60)
+print("Building and training CNN model...")
+print("=" * 60)
+
+cnn_model = build_cnn_model()
+cnn_model.summary()
+
+early_stop_cnn = EarlyStopping(
+    monitor="val_loss", patience=3, restore_best_weights=True
+)
+
+cnn_history = cnn_model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    batch_size=BATCH_SIZE,
+    epochs=EPOCHS,
+    callbacks=[early_stop_cnn],
+    verbose=1
+)
+
+cnn_model.save("cnn_model.keras")
+
+# -----------------------------------------------------------
+# 6. TRAIN THE Bi-LSTM MODEL
+# -----------------------------------------------------------
+print("\n" + "=" * 60)
+print("Building and training Bi-LSTM model...")
+print("=" * 60)
+
+bilstm_model = build_bilstm_model()
+bilstm_model.summary()
+
+early_stop_lstm = EarlyStopping(
+    monitor="val_loss", patience=3, restore_best_weights=True
+)
+
+bilstm_history = bilstm_model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    batch_size=BATCH_SIZE,
+    epochs=EPOCHS,
+    callbacks=[early_stop_lstm],
+    verbose=1
+)
+
+bilstm_model.save("bilstm_model.keras")
+
+# -----------------------------------------------------------
+# 7. EVALUATE BOTH MODELS ON THE HELD-OUT TEST SET
+# -----------------------------------------------------------
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+def evaluate_model(model, name):
+    y_pred_prob = model.predict(X_test, verbose=0)
+    y_pred = (y_pred_prob > 0.5).astype(int).flatten()
+
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred)
+    rec = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+
+    print(f"\n{name} Test Set Performance:")
+    print(f"  Accuracy:  {acc:.4f}")
+    print(f"  Precision: {prec:.4f}")
+    print(f"  Recall:    {rec:.4f}")
+    print(f"  F1-score:  {f1:.4f}")
+
+    return {"model": name, "accuracy": acc, "precision": prec, "recall": rec, "f1": f1}
+
+print("\n" + "=" * 60)
+print("FINAL COMPARISON (matches Paper 2's Table III style comparison)")
+print("=" * 60)
+
+cnn_results = evaluate_model(cnn_model, "CNN")
+bilstm_results = evaluate_model(bilstm_model, "Bi-LSTM")
+
+import pandas as pd
+comparison_df = pd.DataFrame([cnn_results, bilstm_results])
+print("\n", comparison_df.to_string(index=False))
+comparison_df.to_csv("model_comparison.csv", index=False)
+
+print("\nStage 2 complete. Saved: cnn_model.keras, bilstm_model.keras, model_comparison.csv")
+print("Next: Stage 3 wraps the winning model into a real-time prediction pipeline.")

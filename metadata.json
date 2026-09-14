@@ -1,0 +1,6 @@
+{
+  "max_len": 50,
+  "positive_label": "Positive",
+  "negative_label": "Negative",
+  "model_version": "bilstm-v1"
+}
