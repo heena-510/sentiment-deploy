@@ -1,23 +1,15 @@
 """
-Stage 7: Standalone inference module.
+Standalone inference module with Gen-Z slang normalization.
 
-Same clean_tweet()/predict logic used in the notebook (Stages 3-5),
-rewritten with zero notebook dependencies (no display(), no globals()
-checks) so it can be imported by an API, a script, or a batch job.
-
-Expects these three files to sit next to this module (copy them out
-of your Kaggle session's /kaggle/working/ folder):
-    - bilstm_model.keras
-    - tokenizer.pkl
-    - metadata.json   (created below if missing, with defaults)
+Adds a slang-to-plain-English translation step before cleaning/tokenizing,
+so the model (trained on older tweet data) can still pick up on sentiment
+carried by modern slang terms it never saw during training.
 """
 
 import os
 import re
 import json
 import pickle
-
-import numpy as np
 
 MODEL_PATH = os.getenv("MODEL_PATH", "bilstm_model.keras")
 TOKENIZER_PATH = os.getenv("TOKENIZER_PATH", "tokenizer.pkl")
@@ -27,8 +19,78 @@ _model = None
 _tokenizer = None
 _metadata = None
 
+SLANG_MAP = {
+    "no cap": "no lie",
+    "cap": "lie",
+    "fr fr": "really",
+    "fr": "really",
+    "rizz": "charm",
+    "gyat": "wow",
+    "it's giving": "it seems",
+    "its giving": "it seems",
+    "delulu": "delusional",
+    "bet": "okay",
+    "bussin": "delicious amazing",
+    "mid": "mediocre",
+    "sus": "suspicious",
+    "slay": "excellent",
+    "slaying": "doing excellently",
+    "goat": "greatest",
+    "goated": "amazing",
+    "lowkey": "somewhat",
+    "highkey": "very",
+    "vibe check": "mood check",
+    "vibing": "enjoying",
+    "ate": "did great",
+    "ate that": "did that great",
+    "iykyk": "you understand",
+    "ick": "disgust",
+    "the ick": "disgust",
+    "npc": "boring person",
+    "ratio": "disliked",
+    "based": "respectable",
+    "cringe": "embarrassing",
+    "glow up": "improvement",
+    "glowed up": "improved",
+    "ghosted": "ignored",
+    "simp": "overly devoted",
+    "tea": "gossip",
+    "spill the tea": "share the gossip",
+    "salty": "annoyed",
+    "flex": "show off",
+    "flexing": "showing off",
+    "w": "win",
+    "l": "loss",
+    "big w": "big win",
+    "big l": "big loss",
+    "touch grass": "go outside",
+    "skibidi": "silly",
+    "rent free": "constantly on my mind",
+    "understood the assignment": "did very well",
+    "main character energy": "confident",
+    "chronically online": "too online",
+    "girl math": "questionable reasoning",
+    "brain rot": "mentally exhausting content",
+    "not me": "I can't believe I'm",
+    "sheesh": "wow",
+    "period": "for real",
+    "periodt": "for real",
+    "aura": "reputation",
+    "mog": "outshine",
+    "mogging": "outshining",
+}
+
+
+def apply_slang_normalization(text: str) -> str:
+    lowered = text.lower()
+    for slang in sorted(SLANG_MAP, key=len, reverse=True):
+        pattern = r"\b" + re.escape(slang) + r"\b"
+        lowered = re.sub(pattern, SLANG_MAP[slang], lowered)
+    return lowered
+
 
 def clean_tweet(text: str) -> str:
+    text = apply_slang_normalization(text)
     text = str(text).lower()
     text = re.sub(r"http\S+|www\S+|https\S+", "", text)
     text = re.sub(r"@\w+", "", text)
@@ -42,13 +104,10 @@ def _load_metadata() -> dict:
     if os.path.exists(METADATA_PATH):
         with open(METADATA_PATH, "r") as f:
             return json.load(f)
-    # sensible defaults matching Stage 2-5 training setup
     return {"max_len": 50, "positive_label": "Positive", "negative_label": "Negative"}
 
 
 def load_artifacts():
-    """Loads model + tokenizer + metadata once, caches in module globals.
-    Call this at API startup rather than per-request."""
     global _model, _tokenizer, _metadata
 
     if _model is not None:
@@ -56,56 +115,4 @@ def load_artifacts():
 
     if not (os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)):
         raise FileNotFoundError(
-            f"Missing model artifacts. Expected '{MODEL_PATH}' and "
-            f"'{TOKENIZER_PATH}' in the working directory. Copy them out "
-            f"of your Kaggle /kaggle/working/ folder first."
-        )
-
-    # Imported lazily so this module can be inspected/tested without
-    # requiring tensorflow to be installed.
-    from tensorflow.keras.models import load_model
-
-    _model = load_model(MODEL_PATH)
-    with open(TOKENIZER_PATH, "rb") as f:
-        _tokenizer = pickle.load(f)
-    _metadata = _load_metadata()
-
-    return _model, _tokenizer, _metadata
-
-
-def predict_sentiment(text: str) -> dict:
-    """Runs one piece of raw text through the trained Bi-LSTM.
-    Returns {text, sentiment, confidence}."""
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
-
-    model, tokenizer, metadata = load_artifacts()
-    max_len = metadata.get("max_len", 50)
-
-    cleaned = clean_tweet(text)
-    if len(cleaned) == 0:
-        return {"text": text, "sentiment": "Neutral", "confidence": 0.0}
-
-    seq = tokenizer.texts_to_sequences([cleaned])
-    padded = pad_sequences(seq, maxlen=max_len, padding="post", truncating="post")
-    prob = float(model.predict(padded, verbose=0)[0][0])
-
-    sentiment = metadata.get("positive_label", "Positive") if prob > 0.5 \
-        else metadata.get("negative_label", "Negative")
-    confidence = round((prob if prob > 0.5 else 1 - prob) * 100, 2)
-
-    return {"text": text, "sentiment": sentiment, "confidence": confidence}
-
-
-def predict_batch(texts: list) -> list:
-    """Convenience wrapper for scoring several texts in one call."""
-    return [predict_sentiment(t) for t in texts]
-
-
-if __name__ == "__main__":
-    # quick manual smoke test: python inference.py
-    samples = [
-        "Just got promoted at work! Best day ever!!",
-        "My internet has been down for 3 hours, so done with this provider.",
-    ]
-    for r in predict_batch(samples):
-        print(r)
+            f"Missing
