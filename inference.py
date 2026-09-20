@@ -1,12 +1,23 @@
 """
-Standalone inference module. Same clean_tweet()/predict logic
-used in the notebook, but with no notebook dependencies.
+Stage 7: Standalone inference module.
+
+Same clean_tweet()/predict logic used in the notebook (Stages 3-5),
+rewritten with zero notebook dependencies (no display(), no globals()
+checks) so it can be imported by an API, a script, or a batch job.
+
+Expects these three files to sit next to this module (copy them out
+of your Kaggle session's /kaggle/working/ folder):
+    - bilstm_model.keras
+    - tokenizer.pkl
+    - metadata.json   (created below if missing, with defaults)
 """
 
 import os
 import re
 import json
 import pickle
+
+import numpy as np
 
 MODEL_PATH = os.getenv("MODEL_PATH", "bilstm_model.keras")
 TOKENIZER_PATH = os.getenv("TOKENIZER_PATH", "tokenizer.pkl")
@@ -31,10 +42,13 @@ def _load_metadata() -> dict:
     if os.path.exists(METADATA_PATH):
         with open(METADATA_PATH, "r") as f:
             return json.load(f)
+    # sensible defaults matching Stage 2-5 training setup
     return {"max_len": 50, "positive_label": "Positive", "negative_label": "Negative"}
 
 
 def load_artifacts():
+    """Loads model + tokenizer + metadata once, caches in module globals.
+    Call this at API startup rather than per-request."""
     global _model, _tokenizer, _metadata
 
     if _model is not None:
@@ -43,9 +57,12 @@ def load_artifacts():
     if not (os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)):
         raise FileNotFoundError(
             f"Missing model artifacts. Expected '{MODEL_PATH}' and "
-            f"'{TOKENIZER_PATH}' in the working directory."
+            f"'{TOKENIZER_PATH}' in the working directory. Copy them out "
+            f"of your Kaggle /kaggle/working/ folder first."
         )
 
+    # Imported lazily so this module can be inspected/tested without
+    # requiring tensorflow to be installed.
     from tensorflow.keras.models import load_model
 
     _model = load_model(MODEL_PATH)
@@ -57,6 +74,8 @@ def load_artifacts():
 
 
 def predict_sentiment(text: str) -> dict:
+    """Runs one piece of raw text through the trained Bi-LSTM.
+    Returns {text, sentiment, confidence}."""
     from tensorflow.keras.preprocessing.sequence import pad_sequences
 
     model, tokenizer, metadata = load_artifacts()
@@ -78,10 +97,12 @@ def predict_sentiment(text: str) -> dict:
 
 
 def predict_batch(texts: list) -> list:
+    """Convenience wrapper for scoring several texts in one call."""
     return [predict_sentiment(t) for t in texts]
 
 
 if __name__ == "__main__":
+    # quick manual smoke test: python inference.py
     samples = [
         "Just got promoted at work! Best day ever!!",
         "My internet has been down for 3 hours, so done with this provider.",
