@@ -81,7 +81,7 @@ SLANG_MAP = {
 }
 
 
-def apply_slang_normalization(text: str) -> str:
+def apply_slang_normalization(text):
     lowered = text.lower()
     for slang in sorted(SLANG_MAP, key=len, reverse=True):
         pattern = r"\b" + re.escape(slang) + r"\b"
@@ -89,7 +89,7 @@ def apply_slang_normalization(text: str) -> str:
     return lowered
 
 
-def clean_tweet(text: str) -> str:
+def clean_tweet(text):
     text = apply_slang_normalization(text)
     text = str(text).lower()
     text = re.sub(r"http\S+|www\S+|https\S+", "", text)
@@ -100,7 +100,7 @@ def clean_tweet(text: str) -> str:
     return text
 
 
-def _load_metadata() -> dict:
+def _load_metadata():
     if os.path.exists(METADATA_PATH):
         with open(METADATA_PATH, "r") as f:
             return json.load(f)
@@ -114,5 +114,51 @@ def load_artifacts():
         return _model, _tokenizer, _metadata
 
     if not (os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)):
-        raise FileNotFoundError(
-            f"Missing
+        raise FileNotFoundError("Missing model artifacts: bilstm_model.keras or tokenizer.pkl not found.")
+
+    from tensorflow.keras.models import load_model
+
+    _model = load_model(MODEL_PATH)
+    with open(TOKENIZER_PATH, "rb") as f:
+        _tokenizer = pickle.load(f)
+    _metadata = _load_metadata()
+
+    return _model, _tokenizer, _metadata
+
+
+def predict_sentiment(text):
+    from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+    model, tokenizer, metadata = load_artifacts()
+    max_len = metadata.get("max_len", 50)
+
+    cleaned = clean_tweet(text)
+    if len(cleaned) == 0:
+        return {"text": text, "sentiment": "Neutral", "confidence": 0.0}
+
+    seq = tokenizer.texts_to_sequences([cleaned])
+    padded = pad_sequences(seq, maxlen=max_len, padding="post", truncating="post")
+    prob = float(model.predict(padded, verbose=0)[0][0])
+
+    if prob > 0.5:
+        sentiment = metadata.get("positive_label", "Positive")
+        confidence = round(prob * 100, 2)
+    else:
+        sentiment = metadata.get("negative_label", "Negative")
+        confidence = round((1 - prob) * 100, 2)
+
+    return {"text": text, "sentiment": sentiment, "confidence": confidence}
+
+
+def predict_batch(texts):
+    return [predict_sentiment(t) for t in texts]
+
+
+if __name__ == "__main__":
+    samples = [
+        "This meal is bussin no cap",
+        "That was so mid, kinda cringe ngl",
+        "She ate that, absolute slay",
+    ]
+    for r in predict_batch(samples):
+        print(r)
