@@ -80,6 +80,29 @@ label_map = {0: 0, 4: 1}  # 0 = negative, 1 = positive
 df["label"] = df["target"].map(label_map)
 df = df.dropna(subset=["label"])
 df["label"] = df["label"].astype(int)
+subjects = ["this song", "this movie", "that outfit", "the food", "this game",
+            "her new album", "this show", "the concert", "your fit", "this app",
+            "she", "he", "they"]
+pos_phrases = ["slaps", "is fire", "hits different", "is bussin", "is goated",
+               "is so iconic", "is a whole vibe", "ate", "ate and left no crumbs",
+               "is giving main character energy", "is elite", "is so good"]
+neg_phrases = ["is mid", "is trash", "is so cringe", "is giving nothing", "flopped",
+               "is ass", "is unwatchable", "is a snooze", "is not it", "fell off",
+               "is so mid", "is so bad"]
+endings = ["", " no cap", " fr", " ngl", " lowkey", " honestly", " bro"]
+
+rows = []
+for s in subjects:
+    for e in endings:
+        for p in pos_phrases:
+            rows.append((f"{s} {p}{e}", 1))
+        for p in neg_phrases:
+            rows.append((f"{s} {p}{e}", 0))
+
+slang_df = pd.DataFrame(rows, columns=["text", "label"])
+df = pd.concat([df[["text", "label"]], slang_df], ignore_index=True)
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+print("Slang rows added:", len(slang_df))
 
 # -----------------------------------------------------------
 # 3. CLEAN THE TEXT (matches preprocessing described in Paper 2)

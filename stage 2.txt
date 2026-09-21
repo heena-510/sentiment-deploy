@@ -27,7 +27,7 @@ y_train = np.load("y_train.npy")
 y_val = np.load("y_val.npy")
 y_test = np.load("y_test.npy")
 embedding_matrix = np.load("embedding_matrix.npy")
-USE_PRETRAINED_EMBEDDINGS = bool(np.load("use_pretrained_embeddings.npy")[0])
+USE_PRETRAINED_EMBEDDINGS = False
 
 with open("tokenizer.pkl", "rb") as f:
     tokenizer = pickle.load(f)
