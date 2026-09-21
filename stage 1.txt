@@ -102,6 +102,52 @@ for s in subjects:
 slang_df = pd.DataFrame(rows, columns=["text", "label"])
 df = pd.concat([df[["text", "label"]], slang_df], ignore_index=True)
 df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+subjects = ["this song", "this movie", "that outfit", "the food", "this game",
+            "her new album", "this show", "the concert", "this app", "the service",
+            "that exam", "this lecture", "the ending", "her performance", "the pizza",
+            "my teacher", "that party", "this idea", "she", "he"]
+
+pos_adj = ["fire", "goated", "bussin", "elite", "valid", "so valid", "iconic",
+           "a whole vibe", "so good", "giving main character energy",
+           "a certified banger", "living rent free in my head"]
+neg_adj = ["mid", "so mid", "trash", "so cringe", "ass", "a snooze", "not it",
+           "giving nothing", "a flop", "so bad", "unwatchable", "sus"]
+pos_verbs = ["slaps", "hits different", "ate", "ate and left no crumbs",
+             "slayed", "understood the assignment"]
+neg_verbs = ["fell off", "flopped", "missed the mark"]
+endings = ["", " no cap", " fr", " ngl", " honestly"]
+
+rows = []
+for s in subjects:
+    for e in endings:
+        for a in pos_adj:
+            for cop in ["is", "was"]:
+                rows.append((f"{s} {cop} {a}{e}", 1))
+        for a in neg_adj:
+            for cop in ["is", "was"]:
+                rows.append((f"{s} {cop} {a}{e}", 0))
+        for v in pos_verbs:
+            rows.append((f"{s} {v}{e}", 1))
+        for v in neg_verbs:
+            rows.append((f"{s} {v}{e}", 0))
+
+extra_pos = ["I'm dead that was so funny", "I'm crying this is so funny",
+             "this is valid", "that's so valid", "you slayed that", "slay queen",
+             "vibe check passed", "that's a big W", "big W", "he has so much rizz",
+             "we are so back", "you ate that", "this is living rent free in my head"]
+extra_neg = ["that was mid", "this is so mid", "big L", "that's a huge L",
+             "you took an L", "this is sus", "that was so awkward",
+             "I'm cringing so hard", "this is giving nothing", "that's not it",
+             "that's a red flag", "the vibes were off", "this is so ick", "what a flop"]
+
+for t in extra_pos * 5:
+    rows.append((t, 1))
+for t in extra_neg * 5:
+    rows.append((t, 0))
+
+slang_df = pd.DataFrame(rows, columns=["text", "label"])
+df = pd.concat([df[["text", "label"]], slang_df], ignore_index=True)
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 print("Slang rows added:", len(slang_df))
 
 # -----------------------------------------------------------
